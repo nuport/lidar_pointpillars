@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>lidar_pointpillars</name>
+  <version>1.0.0</version>
+  <description>PointPillars 3D object detection using TensorRT inference</description>
+
+  <maintainer email="todo@todo.com">todo</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nuport_perception_msgs</depend>
+  <depend>geometry_msgs</depend>
+</package>

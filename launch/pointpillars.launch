@@ -1,0 +1,25 @@
+<launch>
+
+	<arg name="bagfile" default="/home/nuport/Desktop/nuport_2025-12-19-18-02-25_2.save.bag" />
+
+	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
+	<arg name="cloud_frame_id" default="lidar/front/center"/>
+
+	<!-- Start playing rosbag using simulated clock -->
+	<node pkg="rosbag" type="play" name="player" args="--clock -r 0.1 $(arg bagfile)" required="True"  output="log"/>
+	<param name="/use_sim_time" value="true"/>
+
+	<node pkg="lidar_pointpillars" type="pointpillars_node" name="pointpillars_node" output="screen">
+		<param name="engine_path" value="$(find lidar_pointpillars)/models/model.trt"/>
+		<param name="input_topic" value="$(arg cloud_topic)"/>
+		<param name="output_topic" value="/detections"/>
+		<param name="score_threshold" value="0.4"/>
+		<param name="nms_threshold" value="0.01"/>
+		<param name="max_detections" value="50"/>
+		<param name="num_classes" value="3"/>
+		<param name="num_boxes" value="100"/>
+		<param name="max_points_per_voxel" value="32"/>
+		<param name="max_voxels" value="40000"/>
+	</node>
+
+</launch>
