@@ -1,6 +1,6 @@
 <launch>
 
-	<arg name="bagfile" default="/home/nuport/Desktop/nuport_2025-12-19-18-02-25_2.save.bag" />
+	<arg name="bagfile" default="/home/nuport/Desktop/nuport_2025-12-19-18-02-25_2.save.bag"/>
 
 	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
 	<arg name="cloud_frame_id" default="lidar/front/center"/>
@@ -13,7 +13,7 @@
 		<param name="engine_path" value="$(find lidar_pointpillars)/models/model.trt"/>
 		<param name="input_topic" value="$(arg cloud_topic)"/>
 		<param name="output_topic" value="/detections"/>
-		<param name="score_threshold" value="0.4"/>
+		<param name="score_threshold" value="0.1"/>
 		<param name="nms_threshold" value="0.01"/>
 		<param name="max_detections" value="50"/>
 		<param name="num_classes" value="3"/>
