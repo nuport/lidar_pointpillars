@@ -5,6 +5,14 @@
 	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
 	<arg name="cloud_frame_id" default="lidar/front/center"/>
 
+	<node pkg="nodelet" type="nodelet" name="cloud_compress"
+	      args="standalone nuport_perception/CloudCompress" output="screen">
+
+		<remap from="input"  to="$(arg cloud_topic)"/>
+		<remap from="output" to="$(arg cloud_topic)_transport"/>
+
+	</node>
+
 	<!-- Start playing rosbag using simulated clock -->
 	<node pkg="rosbag" type="play" name="player" args="--clock -r 0.1 $(arg bagfile)" required="True"  output="log"/>
 	<param name="/use_sim_time" value="true"/>

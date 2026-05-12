@@ -332,11 +332,29 @@ private:
     uint16_t labelToClassId(int label)
     {
         // Map model class indices to nuport_perception_msgs classification labels
-        // Adjust this mapping based on your model's class definitions
+        // Model classes: Car, Truck, Bus, Construction, Motorcycle, Bicycle, Trailer,
+        //   EmergencyVehicle, Train, OtherVehicle, EgoTrailer, Pedestrian, Animal,
+        //   TrafficCone, Barrier, PushablePullable, Debris, BicycleRack, TrafficSign
         switch (label) {
-            case 0: return nuport_perception_msgs::ObjectClassification::CAR;
-            case 1: return nuport_perception_msgs::ObjectClassification::PEDESTRIAN;
-            case 2: return nuport_perception_msgs::ObjectClassification::BICYCLE;
+            case 0:  return nuport_perception_msgs::ObjectClassification::CAR;
+            case 1:  return nuport_perception_msgs::ObjectClassification::TRUCK;
+            case 2:  return nuport_perception_msgs::ObjectClassification::BUS;
+            case 3:  return nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE; // Construction
+            case 4:  return nuport_perception_msgs::ObjectClassification::MOTORCYCLE;
+            case 5:  return nuport_perception_msgs::ObjectClassification::BICYCLE;
+            case 6:  return nuport_perception_msgs::ObjectClassification::TRAILER;
+            case 7:  return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // EmergencyVehicle
+            case 8:  return nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE; // Train
+            case 9:  return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // OtherVehicle
+            case 10: return nuport_perception_msgs::ObjectClassification::TRAILER;            // EgoTrailer
+            case 11: return nuport_perception_msgs::ObjectClassification::PEDESTRIAN;
+            case 12: return nuport_perception_msgs::ObjectClassification::ANIMAL;
+            case 13: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // TrafficCone
+            case 14: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // Barrier
+            case 15: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // PushablePullable
+            case 16: return nuport_perception_msgs::ObjectClassification::DEBRIS;
+            case 17: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // BicycleRack
+            case 18: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // TrafficSign
             default: return nuport_perception_msgs::ObjectClassification::UNKNOWN;
         }
     }
