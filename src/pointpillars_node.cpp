@@ -8,7 +8,6 @@
 #include <nuport_perception_msgs/Shape.h>
 #include <geometry_msgs/PoseWithCovariance.h>
 #include <geometry_msgs/Vector3.h>
-#include <tf/transform_datatypes.h>
 
 #include <nodelet/nodelet.h>
 #include <pluginlib/class_list_macros.h>
@@ -221,12 +220,10 @@ private:
             det.kinematics.pose.pose.position.x = box.x;
             det.kinematics.pose.pose.position.y = box.y;
             det.kinematics.pose.pose.position.z = box.z;
-            tf::Quaternion q;
-            q.setRPY(0, 0, box.theta);
-            det.kinematics.pose.pose.orientation.x = q.x();
-            det.kinematics.pose.pose.orientation.y = q.y();
-            det.kinematics.pose.pose.orientation.z = q.z();
-            det.kinematics.pose.pose.orientation.w = q.w();
+            det.kinematics.pose.pose.orientation.x = 0.0;
+            det.kinematics.pose.pose.orientation.y = 0.0;
+            det.kinematics.pose.pose.orientation.z = std::sin(box.theta * 0.5);
+            det.kinematics.pose.pose.orientation.w = std::cos(box.theta * 0.5);
 
             // Shape
             det.shape.type = nuport_perception_msgs::Shape::BOUNDING_BOX;

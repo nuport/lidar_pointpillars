@@ -1,0 +1,11 @@
+# Staging directory for cross-compiled binaries.
+#
+# After a successful cross-compilation build (using Toolchain-V5L.cmake),
+# CMake POST_BUILD commands automatically copy the outputs here:
+#
+#   libpointpillars_nodelet.so
+#   pointpillars_node
+#
+# On the production aarch64 target (which has no CUDA/TensorRT development
+# headers), catkin_make reads from this directory via configure_file(COPYONLY)
+# instead of recompiling from source.
