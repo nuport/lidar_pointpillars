@@ -13,4 +13,11 @@
   <depend>sensor_msgs</depend>
   <depend>nuport_perception_msgs</depend>
   <depend>geometry_msgs</depend>
+  <depend>nodelet</depend>
+  <depend>pluginlib</depend>
+  <depend>tf</depend>
+
+  <export>
+    <nodelet plugin="${prefix}/pointpillars_nodelet.xml"/>
+  </export>
 </package>

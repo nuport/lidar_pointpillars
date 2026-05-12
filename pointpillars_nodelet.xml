@@ -1,0 +1,7 @@
+<library path="lib/libpointpillars_nodelet">
+  <class name="lidar_pointpillars/PointPillarsNodelet"
+         type="PointPillarsNodelet"
+         base_class_type="nodelet::Nodelet">
+    <description>PointPillars 3D object detection nodelet using TensorRT inference</description>
+  </class>
+</library>

@@ -10,6 +10,9 @@
 #include <geometry_msgs/Vector3.h>
 #include <tf/transform_datatypes.h>
 
+#include <nodelet/nodelet.h>
+#include <pluginlib/class_list_macros.h>
+
 #include <NvInfer.h>
 #include <NvInferRuntime.h>
 #include "NvInferPlugin.h"
@@ -21,7 +24,7 @@
 #include "utils.h"
 #include "nms_trt.h"
 
-class Logger : public nvinfer1::ILogger
+class TRTLogger : public nvinfer1::ILogger
 {
     void log(Severity severity, const char* msg) noexcept override
     {
@@ -35,7 +38,7 @@ class Logger : public nvinfer1::ILogger
                 break;
         }
     }
-} gLogger;
+};
 
 #define CHECK_CUDA(status) \
     if (status != 0) \
@@ -44,11 +47,22 @@ class Logger : public nvinfer1::ILogger
         ros::shutdown(); \
     }
 
-class PointPillarsNode
+class PointPillarsNodelet : public nodelet::Nodelet
 {
 public:
-    PointPillarsNode(ros::NodeHandle& nh, ros::NodeHandle& pnh)
+    PointPillarsNodelet() : engine_(nullptr), context_(nullptr) {}
+
+    ~PointPillarsNodelet()
     {
+        delete context_;
+        delete engine_;
+    }
+
+    void onInit() override
+    {
+        ros::NodeHandle& nh  = getNodeHandle();
+        ros::NodeHandle& pnh = getPrivateNodeHandle();
+
         // Parameters
         std::string engine_path;
         pnh.param<std::string>("engine_path", engine_path, "");
@@ -67,30 +81,22 @@ public:
         NDim_ = 3;
 
         if (engine_path.empty()) {
-            ROS_FATAL("Parameter 'engine_path' is required");
-            ros::shutdown();
+            NODELET_FATAL("Parameter 'engine_path' is required");
             return;
         }
 
         // Initialize TensorRT
         if (!initTRT(engine_path)) {
-            ROS_FATAL("Failed to initialize TensorRT engine");
-            ros::shutdown();
+            NODELET_FATAL("Failed to initialize TensorRT engine");
             return;
         }
 
         // Publishers and subscribers
         det_pub_ = nh.advertise<nuport_perception_msgs::ObjectDetectionArray>(output_topic_, 1);
-        pc_sub_ = nh.subscribe(input_topic_, 1, &PointPillarsNode::pointCloudCallback, this);
+        pc_sub_ = nh.subscribe(input_topic_, 1, &PointPillarsNodelet::pointCloudCallback, this);
 
-        ROS_INFO("PointPillars node initialized. Subscribing to: %s, Publishing to: %s",
-                 input_topic_.c_str(), output_topic_.c_str());
-    }
-
-    ~PointPillarsNode()
-    {
-        delete context_;
-        delete engine_;
+        NODELET_INFO("PointPillars nodelet initialized. Subscribing to: %s, Publishing to: %s",
+                     input_topic_.c_str(), output_topic_.c_str());
     }
 
 private:
@@ -98,27 +104,27 @@ private:
     {
         bool didInitPlugins = initLibNvInferPlugins(nullptr, "");
         if (!didInitPlugins) {
-            ROS_WARN("Failed to initialize TensorRT plugins");
+            NODELET_WARN("Failed to initialize TensorRT plugins");
         }
 
         std::vector<char> engineData;
         try {
             engineData = readEngineFile(engine_path);
         } catch (const std::runtime_error& e) {
-            ROS_ERROR("Failed to read engine file: %s", e.what());
+            NODELET_ERROR("Failed to read engine file: %s", e.what());
             return false;
         }
 
-        nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(gLogger);
+        nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(trt_logger_);
         engine_ = runtime->deserializeCudaEngine(engineData.data(), engineData.size());
         if (!engine_) {
-            ROS_ERROR("Failed to deserialize CUDA engine");
+            NODELET_ERROR("Failed to deserialize CUDA engine");
             return false;
         }
 
         context_ = engine_->createExecutionContext();
         if (!context_) {
-            ROS_ERROR("Failed to create execution context");
+            NODELET_ERROR("Failed to create execution context");
             return false;
         }
 
@@ -363,8 +369,9 @@ private:
     ros::Subscriber pc_sub_;
     ros::Publisher det_pub_;
 
-    nvinfer1::ICudaEngine* engine_ = nullptr;
-    nvinfer1::IExecutionContext* context_ = nullptr;
+    TRTLogger trt_logger_;
+    nvinfer1::ICudaEngine* engine_;
+    nvinfer1::IExecutionContext* context_;
 
     std::string input_topic_;
     std::string output_topic_;
@@ -380,13 +387,16 @@ private:
     std::vector<float> coors_range_;
 };
 
+PLUGINLIB_EXPORT_CLASS(PointPillarsNodelet, nodelet::Nodelet)
+
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "pointpillars_node");
     ros::NodeHandle nh;
     ros::NodeHandle pnh("~");
 
-    PointPillarsNode node(nh, pnh);
+    PointPillarsNodelet node;
+    node.init("pointpillars", {}, {}, nullptr, nullptr);
     ros::spin();
     return 0;
 }

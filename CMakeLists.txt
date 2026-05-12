@@ -8,6 +8,9 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   nuport_perception_msgs
   geometry_msgs
+  nodelet
+  pluginlib
+  tf
 )
 
 find_package(CUDA REQUIRED)
@@ -20,7 +23,7 @@ else()
 endif()
 
 catkin_package(
-  CATKIN_DEPENDS roscpp sensor_msgs nuport_perception_msgs geometry_msgs
+  CATKIN_DEPENDS roscpp sensor_msgs nuport_perception_msgs geometry_msgs nodelet pluginlib tf
 )
 
 include_directories(
@@ -40,10 +43,32 @@ set(SOURCE_FILES
   src/voxelization_trt.cu
 )
 
+# Nodelet shared library
+add_library(pointpillars_nodelet ${SOURCE_FILES})
+add_dependencies(pointpillars_nodelet ${catkin_EXPORTED_TARGETS})
+target_link_libraries(pointpillars_nodelet
+  ${catkin_LIBRARIES}
+  nvinfer
+  nvinfer_plugin
+  ${CUDA_LIBRARIES}
+)
+
+# Standalone executable (wraps the nodelet)
 add_executable(pointpillars_node ${SOURCE_FILES})
+add_dependencies(pointpillars_node ${catkin_EXPORTED_TARGETS})
 target_link_libraries(pointpillars_node
   ${catkin_LIBRARIES}
   nvinfer
   nvinfer_plugin
   ${CUDA_LIBRARIES}
+)
+
+install(TARGETS pointpillars_nodelet pointpillars_node
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(FILES pointpillars_nodelet.xml
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
