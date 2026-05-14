@@ -37,7 +37,7 @@ if(VIBRANTE OR NOT ${CMAKE_LIBRARY_ARCHITECTURE} STREQUAL "aarch64-linux-gnu")
   endif()
 
   enable_language(CUDA)
-  set(CMAKE_CUDA_STANDARD 11)
+  set(CMAKE_CUDA_STANDARD 14)
 
   set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
   # cuDLA is a transitive link dependency of libnvinfer on DRIVE OS (VIBRANTE).
