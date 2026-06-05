@@ -70,8 +70,8 @@ public:
         pnh.param<float>("score_threshold", score_thr_, 0.1f);
         pnh.param<float>("nms_threshold", nms_thr_, 0.01f);
         pnh.param<int>("max_detections", max_num_, 50);
-        pnh.param<int>("num_classes", num_class_, 3);
-        pnh.param<int>("num_boxes", num_box_, 100);
+        pnh.param<int>("num_classes", num_class_, 19);
+        pnh.param<int>("num_boxes", num_box_, 1000);
         pnh.param<int>("max_points_per_voxel", max_points_, 32);
         pnh.param<int>("max_voxels", max_voxels_, 40000);
 
@@ -200,7 +200,7 @@ private:
         cudaFree(d_coors);
 
         // TRT inference
-        std::vector<float> output(num_box_ * (7 + num_class_ + 1));
+        std::vector<float> output(num_box_ * 11);
         trtInfer(d_voxels, d_coors_padded, d_num_points_per_voxel, voxel_num,
                  max_points_, engine_, context_, output);
 
@@ -300,41 +300,79 @@ private:
     void postProcessing(std::vector<float>& output, int& num_class, float& nms_thr,
                         float& score_thr, int& max_num, std::vector<Box3dfull>& bboxes_full)
     {
-        std::vector<Box2d> bboxes_2d;
-        std::vector<Box3d> bboxes_3d;
-        std::vector<std::vector<float>> scores_list;
-        std::vector<float> direction_list;
-        decodeDetResults(output, num_class, bboxes_2d, bboxes_3d, scores_list, direction_list);
+        std::vector<Box2d> valid_boxes_2d;
+        std::vector<Box3d> valid_boxes_3d;
+        std::vector<float> valid_scores;
+        std::vector<int> valid_classes;
+        std::vector<float> valid_directions;
+
+        int n_type = 11;
+        int num_boxes = output.size() / n_type;
+
+        for (int i = 0; i < num_boxes; i++) {
+            int offset = i * n_type;
+            float score = output[offset + 7];
+            if (score <= score_thr) {
+                continue;
+            }
+
+            float x = output[offset + 0];
+            float y = output[offset + 1];
+            float z = output[offset + 2];
+            float dx = output[offset + 3];
+            float dy = output[offset + 4];
+            float dz = output[offset + 5];
+            float theta = output[offset + 6];
+            int class_id = static_cast<int>(output[offset + 8]);
+            float direction = output[offset + 10];
+
+            Box2d box2d;
+            box2d.x1 = x - dx / 2.0f;
+            box2d.y1 = y - dy / 2.0f;
+            box2d.x2 = x + dx / 2.0f;
+            box2d.y2 = y + dy / 2.0f;
+            box2d.theta = theta;
+
+            Box3d box3d;
+            box3d.x = x;
+            box3d.y = y;
+            box3d.z = z;
+            box3d.w = dy; // width perpendicular to local heading
+            box3d.l = dx; // length along local heading
+            box3d.h = dz;
+            box3d.theta = theta;
+
+            valid_boxes_2d.push_back(box2d);
+            valid_boxes_3d.push_back(box3d);
+            valid_scores.push_back(score);
+            valid_classes.push_back(class_id);
+            valid_directions.push_back(direction);
+        }
+
+        if (valid_boxes_2d.empty()) {
+            bboxes_full.clear();
+            return;
+        }
+
+        std::vector<int> nms_filter_inds;
+        nms(valid_boxes_2d, valid_scores, nms_thr, nms_filter_inds);
 
         std::vector<Box3dfull> bboxes_3d_nms;
-        for (int i = 0; i < num_class; i++) {
-            std::vector<int> score_filter_inds;
-            std::vector<float> scores;
-            filterByScores(i, scores_list, score_thr, score_filter_inds, scores);
-            std::vector<Box2d> bboxes_2d_filtered;
-            std::vector<Box3d> bboxes_3d_filtered;
-            std::vector<float> direction_filtered;
-            obtainBoxByInds(score_filter_inds, bboxes_2d, bboxes_2d_filtered, bboxes_3d,
-                           bboxes_3d_filtered, direction_list, direction_filtered);
-
-            std::vector<int> nms_filter_inds;
-            nms(bboxes_2d_filtered, scores, nms_thr, nms_filter_inds);
-
-            for (const auto ind : nms_filter_inds) {
-                Box3dfull box3d_full;
-                box3d_full.x = bboxes_3d_filtered[ind].x;
-                box3d_full.y = bboxes_3d_filtered[ind].y;
-                box3d_full.z = bboxes_3d_filtered[ind].z;
-                box3d_full.w = bboxes_3d_filtered[ind].w;
-                box3d_full.l = bboxes_3d_filtered[ind].l;
-                box3d_full.h = bboxes_3d_filtered[ind].h;
-                float limited_theta = limitPeriod(bboxes_3d_filtered[ind].theta);
-                box3d_full.theta = (1.f - direction_filtered[ind]) * M_PI + limited_theta;
-                box3d_full.score = scores[ind];
-                box3d_full.label = i;
-                bboxes_3d_nms.push_back(box3d_full);
-            }
+        for (const auto ind : nms_filter_inds) {
+            Box3dfull box3d_full;
+            box3d_full.x = valid_boxes_3d[ind].x;
+            box3d_full.y = valid_boxes_3d[ind].y;
+            box3d_full.z = valid_boxes_3d[ind].z;
+            box3d_full.w = valid_boxes_3d[ind].w;
+            box3d_full.l = valid_boxes_3d[ind].l;
+            box3d_full.h = valid_boxes_3d[ind].h;
+            float limited_theta = limitPeriod(valid_boxes_3d[ind].theta);
+            box3d_full.theta = (1.f - valid_directions[ind]) * M_PI + limited_theta;
+            box3d_full.score = valid_scores[ind];
+            box3d_full.label = valid_classes[ind];
+            bboxes_3d_nms.push_back(box3d_full);
         }
+
         getTopkBoxes(bboxes_3d_nms, max_num, bboxes_full);
     }
 

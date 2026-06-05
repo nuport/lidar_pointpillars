@@ -170,9 +170,9 @@ __global__ void pad(int* d_coors, int* d_coors_padded, int voxel_num){
     CUDA_1D_KERNEL_LOOP(index, voxel_num) {
         auto coor_offset = d_coors + index * 3;
         auto coor_offset_padded = d_coors_padded + index * 4;
-        coor_offset_padded[1] = coor_offset[0];
-        coor_offset_padded[2] = coor_offset[1];
-        coor_offset_padded[3] = coor_offset[2];
+        coor_offset_padded[1] = coor_offset[2]; // z
+        coor_offset_padded[2] = coor_offset[1]; // y
+        coor_offset_padded[3] = coor_offset[0]; // x
     }
 }
 

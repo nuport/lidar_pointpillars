@@ -80,8 +80,7 @@ void voxelize(const std::vector<Point>& points, const std::vector<float>& voxel_
 
 void padCoors(std::vector<std::vector<int>>& coors, std::vector<std::vector<int>>& padded_coors){
     for (auto& coor : coors){
-        std::vector<int> padded_coor = {0};
-        padded_coor.insert(padded_coor.end(), coor.begin(), coor.end());
+        std::vector<int> padded_coor = {0, coor[2], coor[1], coor[0]};
         padded_coors.push_back(padded_coor);
     }
 }
