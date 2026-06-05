@@ -75,8 +75,14 @@ public:
         pnh.param<int>("max_points_per_voxel", max_points_, 32);
         pnh.param<int>("max_voxels", max_voxels_, 40000);
 
-        voxel_size_ = {0.16f, 0.16f, 4.0f};
-        coors_range_ = {0.0f, -39.68f, -3.0f, 69.12f, 39.68f, 1.0f};
+        if (!pnh.getParam("voxel_size", voxel_size_)) {
+            voxel_size_ = {0.2f, 0.2f, 10.0f};
+            NODELET_INFO("Using default voxel_size_: [0.2, 0.2, 10.0]");
+        }
+        if (!pnh.getParam("coors_range", coors_range_)) {
+            coors_range_ = {-60.0f, -40.0f, -2.0f, 71.2f, 60.8f, 8.0f};
+            NODELET_INFO("Using default coors_range_: [-60.0, -40.0, -2.0, 71.2, 60.8, 8.0]");
+        }
         NDim_ = 3;
 
         if (engine_path.empty()) {
@@ -163,7 +169,7 @@ private:
 
         // Filter points to valid range
         std::vector<Point> points;
-        pointCloudFiler(points_ori, points);
+        pointCloudFilter(points_ori, points, coors_range_);
 
         if (points.empty()) {
             // Publish empty detection array

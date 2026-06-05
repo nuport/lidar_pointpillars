@@ -22,6 +22,13 @@ cd ~/catkin_ws
 catkin_make --pkg lidar_pointpillars
 ```
 
+## Rename ONNX IO Tensors
+
+```bash
+roscd lidar_pointpillars/models
+python /home/nuport/catkin_ws/src/autoware_lidar_transfusion/scripts/rename_onnx_outputs.py --map-inputs '{ "voxels" : "input_pillars", "coords" : "input_coors_batch", "voxel_num_points" : "input_npoints_per_pillar" }' pointpillar_mantruck_topk.onnx pointpillar_mantruck_topk_rename.onnx 
+```
+
 ## Compiling the TensorRT engine
 
 Convert the ONNX model to a TensorRT engine before running the node. The command below builds an engine with dynamic shapes optimised for ~5000 pillars:

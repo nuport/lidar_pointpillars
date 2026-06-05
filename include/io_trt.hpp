@@ -8,22 +8,15 @@
 
 #include "common_trt.h"
 
-void pointCloudFiler(std::vector<Point>& points, std::vector<Point>& new_points){
-    const float data_range[] = {0, -39.68, -3, 69.12, 39.68, 1};
+void pointCloudFilter(const std::vector<Point>& points, std::vector<Point>& new_points, const std::vector<float>& coors_range){
+    if (coors_range.size() < 6) return;
     for (const auto& point : points){
-        if (point.x > data_range[0] && point.x < data_range[3]
-            && point.y > data_range[1] && point.y < data_range[4]
-            && point.z > data_range[2] && point.z < data_range[5]){
+        if (point.x > coors_range[0] && point.x < coors_range[3]
+            && point.y > coors_range[1] && point.y < coors_range[4]
+            && point.z > coors_range[2] && point.z < coors_range[5]){
                 new_points.emplace_back(point);
             }
     }
-
-    // // 输出数据（测试用）
-    // for (auto point : new_points) {
-    //     std::cout << point.x << ", " << point.y << ", " << point.z << " " << point.feature << std::endl;
-    // }
-    // std::cout << std::endl;
-    // std::cout << "points size: " << new_points.size() << std::endl;
 }
 
 bool readPoints(std::string file_path, std::vector<Point>& points){
