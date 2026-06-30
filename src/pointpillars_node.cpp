@@ -17,6 +17,9 @@
 #include "NvInferPlugin.h"
 #include <cuda_runtime.h>
 
+#include <algorithm>
+#include <unordered_map>
+
 #include "common_trt.h"
 #include "io_trt.hpp"
 #include "voxelization_trt.h"
@@ -74,6 +77,12 @@ public:
         pnh.param<int>("num_boxes", num_box_, 1000);
         pnh.param<int>("max_points_per_voxel", max_points_, 32);
         pnh.param<int>("max_voxels", max_voxels_, 40000);
+        pnh.param<std::string>("tensor_name_pillars", tensor_name_pillars_, "input_pillars");
+        pnh.param<std::string>("tensor_name_coords", tensor_name_coords_, "input_coors_batch");
+        pnh.param<std::string>("tensor_name_num_points", tensor_name_num_points_, "input_npoints_per_pillar");
+        pnh.param<int>("class_id_offset", class_id_offset_, 0);
+        pnh.param<float>("z_shift", z_shift_, 0.0f);
+        pnh.param<bool>("xy_center", xy_center_, false);
 
         if (!pnh.getParam("voxel_size", voxel_size_)) {
             voxel_size_ = {0.2f, 0.2f, 10.0f};
@@ -83,6 +92,16 @@ public:
             coors_range_ = {-60.0f, -40.0f, -2.0f, 71.2f, 60.8f, 8.0f};
             NODELET_INFO("Using default coors_range_: [-60.0, -40.0, -2.0, 71.2, 60.8, 8.0]");
         }
+        if (!pnh.getParam("class_names", class_names_)) {
+            class_names_ = {
+                "Car", "Truck", "Bus", "Construction", "Motorcycle", "Bicycle", "Trailer",
+                "EmergencyVehicle", "Train", "OtherVehicle", "EgoTrailer", "Pedestrian", "Animal",
+                "TrafficCone", "Barrier", "PushablePullable", "Debris", "BicycleRack", "TrafficSign"
+            };
+            NODELET_INFO("Using default class_names for legacy mantruck model");
+        }
+
+        initClassMap();
         NDim_ = 3;
 
         if (engine_path.empty()) {
@@ -167,6 +186,38 @@ private:
             }
         }
 
+        if (z_shift_ != 0.0f) {
+            for (auto& p : points_ori) {
+                p.z += z_shift_;
+            }
+        }
+
+        last_ox_ = 0.0f;
+        last_oy_ = 0.0f;
+        if (xy_center_ && !points_ori.empty()) {
+            std::vector<float> xs;
+            std::vector<float> ys;
+            xs.reserve(points_ori.size());
+            ys.reserve(points_ori.size());
+            for (const auto& p : points_ori) {
+                xs.push_back(p.x);
+                ys.push_back(p.y);
+            }
+            const size_t mid = xs.size() / 2;
+            std::nth_element(xs.begin(), xs.begin() + mid, xs.end());
+            std::nth_element(ys.begin(), ys.begin() + mid, ys.end());
+            const float med_x = xs[mid];
+            const float med_y = ys[mid];
+            const float bev_cx = 0.5f * (coors_range_[0] + coors_range_[3]);
+            const float bev_cy = 0.5f * (coors_range_[1] + coors_range_[4]);
+            last_ox_ = bev_cx - med_x;
+            last_oy_ = bev_cy - med_y;
+            for (auto& p : points_ori) {
+                p.x += last_ox_;
+                p.y += last_oy_;
+            }
+        }
+
         // Filter points to valid range
         std::vector<Point> points;
         pointCloudFilter(points_ori, points, coors_range_);
@@ -207,6 +258,18 @@ private:
         // Post processing
         std::vector<Box3dfull> bboxes;
         postProcessing(output, num_class_, nms_thr_, score_thr_, max_num_, bboxes);
+
+        if (z_shift_ != 0.0f || xy_center_) {
+            for (auto& box : bboxes) {
+                if (z_shift_ != 0.0f) {
+                    box.z -= z_shift_;
+                }
+                if (xy_center_) {
+                    box.x -= last_ox_;
+                    box.y -= last_oy_;
+                }
+            }
+        }
 
         // Convert to ROS message
         nuport_perception_msgs::ObjectDetectionArray det_array;
@@ -278,13 +341,13 @@ private:
         inputNpointsPerPillarDims.nbDims = 1;
         inputNpointsPerPillarDims.d[0] = pillar_num;
 
-        context->setInputShape("input_pillars", inputPillarDims);
-        context->setInputShape("input_coors_batch", inputCoorsDims);
-        context->setInputShape("input_npoints_per_pillar", inputNpointsPerPillarDims);
+        context->setInputShape(tensor_name_pillars_.c_str(), inputPillarDims);
+        context->setInputShape(tensor_name_coords_.c_str(), inputCoorsDims);
+        context->setInputShape(tensor_name_num_points_.c_str(), inputNpointsPerPillarDims);
 
-        context->setTensorAddress("input_pillars", inputPillarsDevice);
-        context->setTensorAddress("input_coors_batch", inputCoorsBatchDevice);
-        context->setTensorAddress("input_npoints_per_pillar", inputNpointsPerPillarDevice);
+        context->setTensorAddress(tensor_name_pillars_.c_str(), inputPillarsDevice);
+        context->setTensorAddress(tensor_name_coords_.c_str(), inputCoorsBatchDevice);
+        context->setTensorAddress(tensor_name_num_points_.c_str(), inputNpointsPerPillarDevice);
         context->setTensorAddress("output_x", outputDevice);
 
         context->enqueueV3(0);
@@ -378,32 +441,71 @@ private:
 
     uint16_t labelToClassId(int label)
     {
-        // Map model class indices to nuport_perception_msgs classification labels
-        // Model classes: Car, Truck, Bus, Construction, Motorcycle, Bicycle, Trailer,
-        //   EmergencyVehicle, Train, OtherVehicle, EgoTrailer, Pedestrian, Animal,
-        //   TrafficCone, Barrier, PushablePullable, Debris, BicycleRack, TrafficSign
-        switch (label) {
-            case 0:  return nuport_perception_msgs::ObjectClassification::CAR;
-            case 1:  return nuport_perception_msgs::ObjectClassification::TRUCK;
-            case 2:  return nuport_perception_msgs::ObjectClassification::BUS;
-            case 3:  return nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE; // Construction
-            case 4:  return nuport_perception_msgs::ObjectClassification::MOTORCYCLE;
-            case 5:  return nuport_perception_msgs::ObjectClassification::BICYCLE;
-            case 6:  return nuport_perception_msgs::ObjectClassification::TRAILER;
-            case 7:  return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // EmergencyVehicle
-            case 8:  return nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE; // Train
-            case 9:  return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // OtherVehicle
-            case 10: return nuport_perception_msgs::ObjectClassification::TRAILER;            // EgoTrailer
-            case 11: return nuport_perception_msgs::ObjectClassification::PEDESTRIAN;
-            case 12: return nuport_perception_msgs::ObjectClassification::ANIMAL;
-            case 13: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // TrafficCone
-            case 14: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // Barrier
-            case 15: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // PushablePullable
-            case 16: return nuport_perception_msgs::ObjectClassification::DEBRIS;
-            case 17: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // BicycleRack
-            case 18: return nuport_perception_msgs::ObjectClassification::UNKNOWN;            // TrafficSign
-            default: return nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        const int idx = label - class_id_offset_;
+        if (idx < 0 || idx >= static_cast<int>(class_names_.size())) {
+            return nuport_perception_msgs::ObjectClassification::UNKNOWN;
         }
+        return lookupClassIdByName(class_names_[idx]);
+    }
+
+    void initClassMap()
+    {
+        class_name_to_label_.clear();
+        class_name_to_label_["Car"] = nuport_perception_msgs::ObjectClassification::CAR;
+        class_name_to_label_["Truck"] = nuport_perception_msgs::ObjectClassification::TRUCK;
+        class_name_to_label_["Bus"] = nuport_perception_msgs::ObjectClassification::BUS;
+        class_name_to_label_["Construction"] = nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE;
+        class_name_to_label_["Motorcycle"] = nuport_perception_msgs::ObjectClassification::MOTORCYCLE;
+        class_name_to_label_["Bicycle"] = nuport_perception_msgs::ObjectClassification::BICYCLE;
+        class_name_to_label_["Trailer"] = nuport_perception_msgs::ObjectClassification::TRAILER;
+        class_name_to_label_["EmergencyVehicle"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Train"] = nuport_perception_msgs::ObjectClassification::HEAVY_DUTY_VEHICLE;
+        class_name_to_label_["OtherVehicle"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["EgoTrailer"] = nuport_perception_msgs::ObjectClassification::TRAILER;
+        class_name_to_label_["Pedestrian"] = nuport_perception_msgs::ObjectClassification::PEDESTRIAN;
+        class_name_to_label_["Animal"] = nuport_perception_msgs::ObjectClassification::ANIMAL;
+        class_name_to_label_["TrafficCone"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Barrier"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["PushablePullable"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Debris"] = nuport_perception_msgs::ObjectClassification::DEBRIS;
+        class_name_to_label_["BicycleRack"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["TrafficSign"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+
+        class_name_to_label_["Traffic_sign"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Ego_trailer"] = nuport_perception_msgs::ObjectClassification::TRAILER;
+        class_name_to_label_["Trafficcone"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Other"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Bicycle_rack"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Emergency"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["Pushable_pullable"] = nuport_perception_msgs::ObjectClassification::UNKNOWN;
+        class_name_to_label_["animal"] = nuport_perception_msgs::ObjectClassification::ANIMAL;
+
+        NODELET_INFO("Loaded %zu class names with class_id_offset=%d", class_names_.size(), class_id_offset_);
+        NODELET_INFO("Tensor bindings: pillars=%s coords=%s num_points=%s",
+                     tensor_name_pillars_.c_str(), tensor_name_coords_.c_str(), tensor_name_num_points_.c_str());
+        NODELET_INFO("Preprocess params: z_shift=%.3f xy_center=%s",
+                 z_shift_, xy_center_ ? "true" : "false");
+    }
+
+    std::string sanitizeClassName(const std::string& name) const
+    {
+        std::string out = name;
+        out.erase(std::remove(out.begin(), out.end(), ' '), out.end());
+        return out;
+    }
+
+    uint16_t lookupClassIdByName(const std::string& raw_name) const
+    {
+        auto it = class_name_to_label_.find(raw_name);
+        if (it != class_name_to_label_.end()) {
+            return it->second;
+        }
+        const std::string normalized = sanitizeClassName(raw_name);
+        it = class_name_to_label_.find(normalized);
+        if (it != class_name_to_label_.end()) {
+            return it->second;
+        }
+        return nuport_perception_msgs::ObjectClassification::UNKNOWN;
     }
 
     // Members
@@ -426,6 +528,16 @@ private:
     int NDim_;
     std::vector<float> voxel_size_;
     std::vector<float> coors_range_;
+    std::string tensor_name_pillars_;
+    std::string tensor_name_coords_;
+    std::string tensor_name_num_points_;
+    int class_id_offset_;
+    float z_shift_;
+    bool xy_center_ = false;
+    float last_ox_ = 0.0f;
+    float last_oy_ = 0.0f;
+    std::vector<std::string> class_names_;
+    std::unordered_map<std::string, uint16_t> class_name_to_label_;
 };
 
 PLUGINLIB_EXPORT_CLASS(PointPillarsNodelet, nodelet::Nodelet)

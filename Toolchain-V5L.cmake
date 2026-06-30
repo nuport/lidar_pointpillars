@@ -223,6 +223,11 @@ endforeach()
 string(APPEND _LINKER_FLAGS_AFTER
     " -Wl,-rpath-link,${VIBRANTE_PDK}/filesystem/targetfs/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
     " -Wl,-rpath-link,${VIBRANTE_PDK}/filesystem/targetfs/usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}"
+    # CUDA libraries live in the targetfs under /usr/local/cuda on DRIVE OS.
+    # libcublas.so.11 / libcublasLt.so.11 are needed as transitive deps of
+    # libnvinfer_plugin and must be visible to the cross-linker at link time.
+    " -Wl,-rpath-link,${VIBRANTE_PDK}/filesystem/targetfs/usr/local/cuda/lib64"
+    " -Wl,-rpath-link,${VIBRANTE_PDK}/filesystem/targetfs/usr/local/cuda/targets/aarch64-linux/lib"
 )
 string(APPEND CMAKE_EXE_LINKER_FLAGS " ${_LINKER_FLAGS_AFTER}")
 string(APPEND CMAKE_MODULE_LINKER_FLAGS " ${_LINKER_FLAGS_AFTER}")

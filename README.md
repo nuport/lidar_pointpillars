@@ -40,6 +40,14 @@ Convert the ONNX model to a TensorRT engine before running the node. The command
   --minShapes=input_pillars:200x32x4,input_coors_batch:200x4,input_npoints_per_pillar:200
   --maxShapes=input_pillars:40000x32x4,input_coors_batch:40000x4,input_npoints_per_pillar:40000
   --optShapes=input_pillars:5000x32x4,input_coors_batch:5000x4,input_npoints_per_pillar:5000
+
+/usr/src/tensorrt/bin/trtexec
+  --onnx=pointpillar_combined_v2_ep20.onnx
+  --saveEngine=pointpillar_combined_v2.trt
+  --minShapes=voxels:200x20x4,coords:200x4,voxel_num_points:200
+  --optShapes=voxels:5000x20x4,coords:5000x4,voxel_num_points:5000
+  --maxShapes=voxels:40000x20x4,coords:40000x4,voxel_num_points:40000
+  --fp16
 ```
 
 The compiled engine is hardware-specific — it must be regenerated on every new machine or after a TensorRT version upgrade.

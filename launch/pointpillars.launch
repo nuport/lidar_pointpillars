@@ -1,18 +1,14 @@
 <launch>
 
-	<arg name="bagfile" default="/home/nuport/Desktop/mot/nuport_2026-06-03-19-12-53_0.bag"/>
+	<arg name="bagfile" default="/home/nuport/Desktop/nuport_2026-06-24-00-35-59_0-annotated.bag"/>
+	<arg name="model_cfg" default="$(find lidar_pointpillars)/config/pointpillars_combined_v2.cfg"/>
 
 	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
 	<arg name="cloud_frame_id" default="lidar/front/center"/>
 
 	<!-- Start playing rosbag using simulated clock -->
-	<node pkg="rosbag" type="play" name="player" args="--clock -r 0.1 $(arg bagfile)" required="True"  output="log"/>
+	<node pkg="rosbag" type="play" name="player" args="--clock -r 1 $(arg bagfile)" required="True"  output="log"/>
 	<param name="/use_sim_time" value="true"/>
-
-	<!-- <node pkg="point_cloud_transport" type="republish" name="foxglove_draco_republisher" args="raw foxglove_draco" output="screen">
-    	<remap from="in"  to="$(arg cloud_topic)/filtered" />
-    	<remap from="out" to="$(arg cloud_topic)/filtered/foxglove_draco" />
-	</node> -->
 
 	<node pkg="nodelet" type="nodelet" name="pointpillars_manager" args="manager" output="screen"/>
 
@@ -24,8 +20,8 @@
 
 	<node pkg="nodelet" type="nodelet" name="pointpillars" output="screen"
 	      args="load lidar_pointpillars/PointPillarsNodelet pointpillars_manager">
-		<rosparam command="load" file="$(find lidar_pointpillars)/config/pointpillars_model.cfg"/>
-		<param name="engine_path" value="$(find lidar_pointpillars)/models/pointpillar_mantruck_topk_100_rename.trt"/>
+		<rosparam command="load" file="$(arg model_cfg)"/>
+		<param name="engine_path" value="$(find lidar_pointpillars)/ref/pointpillar_combined_v2.trt"/>
 		<param name="input_topic" value="$(arg cloud_topic)/filtered"/>
 		<param name="output_topic" value="/detections"/>
 		<param name="score_threshold" value="0.3"/>
