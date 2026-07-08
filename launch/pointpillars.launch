@@ -2,6 +2,7 @@
 
 	<arg name="bagfile" default="/home/nuport/Desktop/nuport_2026-06-24-00-35-59_0-annotated.bag"/>
 	<arg name="model_cfg" default="$(find lidar_pointpillars)/config/pointpillars_combined_v2.cfg"/>
+	<arg name="anchor_file" default="$(find lidar_pointpillars)/config/anchor_prototypes_38x7.txt"/>
 
 	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
 	<arg name="cloud_frame_id" default="lidar/front/center"/>
@@ -21,7 +22,9 @@
 	<node pkg="nodelet" type="nodelet" name="pointpillars" output="screen"
 	      args="load lidar_pointpillars/PointPillarsNodelet pointpillars_manager">
 		<rosparam command="load" file="$(arg model_cfg)"/>
-		<param name="engine_path" value="$(find lidar_pointpillars)/ref/pointpillar_combined_v2.trt"/>
+		<param name="encoder_engine_path" value="$(find lidar_pointpillars)/engines/encoder_fp16.trt"/>
+		<param name="backbone_engine_path" value="$(find lidar_pointpillars)/engines/backbone_rawhead_int8.trt"/>
+		<param name="anchor_prototypes_file" value="$(arg anchor_file)"/>
 		<param name="input_topic" value="$(arg cloud_topic)/filtered"/>
 		<param name="output_topic" value="/detections"/>
 		<param name="score_threshold" value="0.3"/>

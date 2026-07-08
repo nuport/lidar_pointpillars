@@ -42,8 +42,8 @@ Convert the ONNX model to a TensorRT engine before running the node. The command
   --optShapes=input_pillars:5000x32x4,input_coors_batch:5000x4,input_npoints_per_pillar:5000
 
 /usr/src/tensorrt/bin/trtexec
-  --onnx=pointpillar_combined_v2_ep20.onnx
-  --saveEngine=pointpillar_combined_v2.trt
+  --onnx=onnx/pointpillar_combined_v2_ep20.onnx
+  --saveEngine=engines/pointpillar_combined_v2.trt
   --minShapes=voxels:200x20x4,coords:200x4,voxel_num_points:200
   --optShapes=voxels:5000x20x4,coords:5000x4,voxel_num_points:5000
   --maxShapes=voxels:40000x20x4,coords:40000x4,voxel_num_points:40000
@@ -67,6 +67,29 @@ The compiled engine is hardware-specific — it must be regenerated on every new
 
 ```bash
 roslaunch lidar_pointpillars pointpillars.launch
+```
+
+## Anchor Prototypes For Raw-Head Decode
+
+When using split encoder/backbone runtime with raw-head outputs, the ROS decoder
+needs anchor prototypes (`n_anchors x 7`). If they are missing, you will see:
+
+`Raw-head decode failed: anchor_prototypes size mismatch...`
+
+Generate anchors from a decoded-head ONNX and write them to the default file:
+
+```bash
+python scripts/extract_anchor_prototypes.py \
+  --decoded_onnx /path/to/backbone_decoded_fp32.onnx \
+  --output config/anchor_prototypes_38x7.txt
+```
+
+The launch file already passes this path as `anchor_prototypes_file` by default.
+You can override it:
+
+```bash
+roslaunch lidar_pointpillars pointpillars.launch \
+  anchor_file:=/absolute/path/to/anchors.txt
 ```
 
 By default the launch file replays a rosbag. For live sensor use, override the topic argument:

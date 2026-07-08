@@ -18,13 +18,17 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include <unordered_map>
+#include <xmlrpcpp/XmlRpcValue.h>
 
 #include "common_trt.h"
 #include "io_trt.hpp"
 #include "voxelization_trt.h"
 #include "utils.h"
 #include "nms_trt.h"
+#include "pp_postprocess_cuda.h"
 
 class TRTLogger : public nvinfer1::ILogger
 {
@@ -52,12 +56,18 @@ class TRTLogger : public nvinfer1::ILogger
 class PointPillarsNodelet : public nodelet::Nodelet
 {
 public:
-    PointPillarsNodelet() : engine_(nullptr), context_(nullptr) {}
+        PointPillarsNodelet()
+                : encoder_runtime_(nullptr), encoder_engine_(nullptr), encoder_context_(nullptr),
+                    backbone_runtime_(nullptr), backbone_engine_(nullptr), backbone_context_(nullptr) {}
 
     ~PointPillarsNodelet()
     {
-        delete context_;
-        delete engine_;
+                delete backbone_context_;
+                delete backbone_engine_;
+                delete backbone_runtime_;
+                delete encoder_context_;
+                delete encoder_engine_;
+                delete encoder_runtime_;
     }
 
     void onInit() override
@@ -66,8 +76,10 @@ public:
         ros::NodeHandle& pnh = getPrivateNodeHandle();
 
         // Parameters
-        std::string engine_path;
-        pnh.param<std::string>("engine_path", engine_path, "");
+        std::string encoder_engine_path;
+        std::string backbone_engine_path;
+        pnh.param<std::string>("encoder_engine_path", encoder_engine_path, "");
+        pnh.param<std::string>("backbone_engine_path", backbone_engine_path, "");
         pnh.param<std::string>("input_topic", input_topic_, "/points");
         pnh.param<std::string>("output_topic", output_topic_, "/detections");
         pnh.param<float>("score_threshold", score_thr_, 0.1f);
@@ -77,12 +89,22 @@ public:
         pnh.param<int>("num_boxes", num_box_, 1000);
         pnh.param<int>("max_points_per_voxel", max_points_, 32);
         pnh.param<int>("max_voxels", max_voxels_, 40000);
-        pnh.param<std::string>("tensor_name_pillars", tensor_name_pillars_, "input_pillars");
-        pnh.param<std::string>("tensor_name_coords", tensor_name_coords_, "input_coors_batch");
-        pnh.param<std::string>("tensor_name_num_points", tensor_name_num_points_, "input_npoints_per_pillar");
+        pnh.param<std::string>("tensor_name_encoder_pillars", tensor_name_encoder_pillars_, "voxels");
+        pnh.param<std::string>("tensor_name_encoder_coords", tensor_name_encoder_coords_, "coords");
+        pnh.param<std::string>("tensor_name_encoder_num_points", tensor_name_encoder_num_points_, "voxel_num_points");
+        pnh.param<std::string>("tensor_name_encoder_output", tensor_name_encoder_output_, "spatial_features");
+        pnh.param<std::string>("tensor_name_backbone_input", tensor_name_backbone_input_, "spatial_features");
+        pnh.param<std::string>("tensor_name_backbone_cls_output", tensor_name_backbone_cls_output_, "cls_preds");
+        pnh.param<std::string>("tensor_name_backbone_box_output", tensor_name_backbone_box_output_, "box_preds");
+        pnh.param<std::string>("tensor_name_backbone_dir_output", tensor_name_backbone_dir_output_, "dir_preds");
+        pnh.param<int>("point_feature_dim", point_feature_dim_, 4);
+        pnh.param<float>("grid_step", grid_step_, 0.4f);
+        pnh.param<std::string>("anchor_prototypes_file", anchor_prototypes_file_, "");
         pnh.param<int>("class_id_offset", class_id_offset_, 0);
         pnh.param<float>("z_shift", z_shift_, 0.0f);
         pnh.param<bool>("xy_center", xy_center_, false);
+
+        loadAnchorPrototypes(pnh);
 
         if (!pnh.getParam("voxel_size", voxel_size_)) {
             voxel_size_ = {0.2f, 0.2f, 10.0f};
@@ -104,14 +126,32 @@ public:
         initClassMap();
         NDim_ = 3;
 
-        if (engine_path.empty()) {
-            NODELET_FATAL("Parameter 'engine_path' is required");
+        if (encoder_engine_path.empty() || backbone_engine_path.empty()) {
+            NODELET_FATAL("Parameters 'encoder_engine_path' and 'backbone_engine_path' are required");
             return;
         }
 
-        // Initialize TensorRT
-        if (!initTRT(engine_path)) {
-            NODELET_FATAL("Failed to initialize TensorRT engine");
+        if (point_feature_dim_ != static_cast<int>(sizeof(Point) / sizeof(float))) {
+            NODELET_FATAL("point_feature_dim=%d does not match Point layout=%zu. Update Point struct or model contract first.",
+                          point_feature_dim_, sizeof(Point) / sizeof(float));
+            return;
+        }
+
+        bool didInitPlugins = initLibNvInferPlugins(nullptr, "");
+        if (!didInitPlugins) {
+            NODELET_WARN("Failed to initialize TensorRT plugins");
+        }
+
+        if (!initTRT(encoder_engine_path, encoder_runtime_, encoder_engine_, encoder_context_, "encoder")) {
+            NODELET_FATAL("Failed to initialize encoder TensorRT engine");
+            return;
+        }
+        if (!initTRT(backbone_engine_path, backbone_runtime_, backbone_engine_, backbone_context_, "backbone")) {
+            NODELET_FATAL("Failed to initialize backbone TensorRT engine");
+            return;
+        }
+        if (!validateTensorBindings()) {
+            NODELET_FATAL("Tensor name validation failed for split architecture");
             return;
         }
 
@@ -124,35 +164,189 @@ public:
     }
 
 private:
-    bool initTRT(const std::string& engine_path)
+    bool initTRT(const std::string& engine_path,
+                 nvinfer1::IRuntime*& runtime,
+                 nvinfer1::ICudaEngine*& engine,
+                 nvinfer1::IExecutionContext*& context,
+                 const std::string& engine_name)
     {
-        bool didInitPlugins = initLibNvInferPlugins(nullptr, "");
-        if (!didInitPlugins) {
-            NODELET_WARN("Failed to initialize TensorRT plugins");
-        }
-
         std::vector<char> engineData;
         try {
             engineData = readEngineFile(engine_path);
         } catch (const std::runtime_error& e) {
-            NODELET_ERROR("Failed to read engine file: %s", e.what());
+            NODELET_ERROR("Failed to read %s engine file: %s", engine_name.c_str(), e.what());
             return false;
         }
 
-        nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(trt_logger_);
-        engine_ = runtime->deserializeCudaEngine(engineData.data(), engineData.size());
-        if (!engine_) {
-            NODELET_ERROR("Failed to deserialize CUDA engine");
+        runtime = nvinfer1::createInferRuntime(trt_logger_);
+        engine = runtime->deserializeCudaEngine(engineData.data(), engineData.size());
+        if (!engine) {
+            NODELET_ERROR("Failed to deserialize %s CUDA engine", engine_name.c_str());
             return false;
         }
 
-        context_ = engine_->createExecutionContext();
-        if (!context_) {
-            NODELET_ERROR("Failed to create execution context");
+        context = engine->createExecutionContext();
+        if (!context) {
+            NODELET_ERROR("Failed to create %s execution context", engine_name.c_str());
             return false;
         }
 
         return true;
+    }
+
+    bool validateTensorBinding(const nvinfer1::ICudaEngine* engine,
+                               const std::string& tensor_name,
+                               nvinfer1::TensorIOMode expected_mode,
+                               const std::string& engine_name) const
+    {
+        if (!engine) {
+            NODELET_ERROR("%s engine is null while validating tensor '%s'", engine_name.c_str(), tensor_name.c_str());
+            return false;
+        }
+        const int io_count = engine->getNbIOTensors();
+        bool found = false;
+        for (int i = 0; i < io_count; ++i) {
+            const char* io_name = engine->getIOTensorName(i);
+            if (io_name && tensor_name == io_name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            NODELET_ERROR("Tensor '%s' not found in %s engine", tensor_name.c_str(), engine_name.c_str());
+            return false;
+        }
+        const auto mode = engine->getTensorIOMode(tensor_name.c_str());
+        if (mode != expected_mode) {
+            NODELET_ERROR("Tensor '%s' in %s engine has wrong IO mode", tensor_name.c_str(), engine_name.c_str());
+            return false;
+        }
+        return true;
+    }
+
+    bool validateTensorBindings() const
+    {
+        bool ok = true;
+        ok &= validateTensorBinding(encoder_engine_, tensor_name_encoder_pillars_, nvinfer1::TensorIOMode::kINPUT, "encoder");
+        ok &= validateTensorBinding(encoder_engine_, tensor_name_encoder_coords_, nvinfer1::TensorIOMode::kINPUT, "encoder");
+        ok &= validateTensorBinding(encoder_engine_, tensor_name_encoder_num_points_, nvinfer1::TensorIOMode::kINPUT, "encoder");
+        ok &= validateTensorBinding(encoder_engine_, tensor_name_encoder_output_, nvinfer1::TensorIOMode::kOUTPUT, "encoder");
+
+        ok &= validateTensorBinding(backbone_engine_, tensor_name_backbone_input_, nvinfer1::TensorIOMode::kINPUT, "backbone");
+        ok &= validateTensorBinding(backbone_engine_, tensor_name_backbone_cls_output_, nvinfer1::TensorIOMode::kOUTPUT, "backbone");
+        ok &= validateTensorBinding(backbone_engine_, tensor_name_backbone_box_output_, nvinfer1::TensorIOMode::kOUTPUT, "backbone");
+        ok &= validateTensorBinding(backbone_engine_, tensor_name_backbone_dir_output_, nvinfer1::TensorIOMode::kOUTPUT, "backbone");
+        return ok;
+    }
+
+    size_t numElements(const nvinfer1::Dims& dims) const
+    {
+        if (dims.nbDims <= 0) {
+            return 0;
+        }
+        size_t count = 1;
+        for (int i = 0; i < dims.nbDims; ++i) {
+            if (dims.d[i] < 0) {
+                return 0;
+            }
+            count *= static_cast<size_t>(dims.d[i]);
+        }
+        return count;
+    }
+
+    static bool xmlValueToFloat(const XmlRpc::XmlRpcValue& value, float& out)
+    {
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeInt) {
+            out = static_cast<float>(static_cast<int>(value));
+            return true;
+        }
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeDouble) {
+            out = static_cast<float>(static_cast<double>(value));
+            return true;
+        }
+        return false;
+    }
+
+    bool loadAnchorsFromParam(const ros::NodeHandle& pnh, std::vector<float>& out) const
+    {
+        std::vector<double> flat;
+        if (pnh.getParam("anchor_prototypes", flat) && !flat.empty()) {
+            out.assign(flat.begin(), flat.end());
+            return true;
+        }
+
+        XmlRpc::XmlRpcValue xml;
+        if (!pnh.getParam("anchor_prototypes", xml)) {
+            return false;
+        }
+        if (xml.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+            return false;
+        }
+
+        for (int i = 0; i < xml.size(); ++i) {
+            if (xml[i].getType() == XmlRpc::XmlRpcValue::TypeArray) {
+                for (int j = 0; j < xml[i].size(); ++j) {
+                    float v = 0.0f;
+                    if (!xmlValueToFloat(xml[i][j], v)) {
+                        return false;
+                    }
+                    out.push_back(v);
+                }
+            } else {
+                float v = 0.0f;
+                if (!xmlValueToFloat(xml[i], v)) {
+                    return false;
+                }
+                out.push_back(v);
+            }
+        }
+        return !out.empty();
+    }
+
+    bool loadAnchorsFromFile(const std::string& file_path, std::vector<float>& out) const
+    {
+        if (file_path.empty()) {
+            return false;
+        }
+
+        std::ifstream ifs(file_path.c_str());
+        if (!ifs.is_open()) {
+            NODELET_WARN("Could not open anchor_prototypes_file: %s", file_path.c_str());
+            return false;
+        }
+
+        std::string line;
+        while (std::getline(ifs, line)) {
+            for (char& ch : line) {
+                if (ch == ',') {
+                    ch = ' ';
+                }
+            }
+            std::istringstream iss(line);
+            float v = 0.0f;
+            while (iss >> v) {
+                out.push_back(v);
+            }
+        }
+        return !out.empty();
+    }
+
+    void loadAnchorPrototypes(const ros::NodeHandle& pnh)
+    {
+        anchor_prototypes_.clear();
+
+        if (loadAnchorsFromParam(pnh, anchor_prototypes_)) {
+            NODELET_INFO("Loaded anchor_prototypes from ROS params: %zu values", anchor_prototypes_.size());
+            return;
+        }
+
+        if (loadAnchorsFromFile(anchor_prototypes_file_, anchor_prototypes_)) {
+            NODELET_INFO("Loaded anchor_prototypes from file %s: %zu values",
+                         anchor_prototypes_file_.c_str(), anchor_prototypes_.size());
+            return;
+        }
+
+        NODELET_WARN("No anchor prototypes loaded. Set 'anchor_prototypes' or 'anchor_prototypes_file'.");
     }
 
     void pointCloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg)
@@ -250,14 +444,25 @@ private:
         padCoorsGPU(d_coors, d_coors_padded, voxel_num);
         cudaFree(d_coors);
 
-        // TRT inference
-        std::vector<float> output(num_box_ * 11);
-        trtInfer(d_voxels, d_coors_padded, d_num_points_per_voxel, voxel_num,
-                 max_points_, engine_, context_, output);
+        // TRT split inference
+        std::vector<float> cls_output;
+        std::vector<float> box_output;
+        std::vector<float> dir_output;
+        nvinfer1::Dims cls_dims{};
+        nvinfer1::Dims box_dims{};
+        nvinfer1::Dims dir_dims{};
+        if (!trtInferSplit(d_voxels, d_coors_padded, d_num_points_per_voxel, voxel_num,
+                           max_points_, cls_output, box_output, dir_output, cls_dims, box_dims, dir_dims)) {
+            NODELET_ERROR_THROTTLE(1.0, "Split TRT inference failed for current frame");
+            nuport_perception_msgs::ObjectDetectionArray det_array;
+            det_array.header = msg->header;
+            det_pub_.publish(det_array);
+            return;
+        }
 
-        // Post processing
+        // Post processing (raw-head decode integration follows in the next implementation step).
         std::vector<Box3dfull> bboxes;
-        postProcessing(output, num_class_, nms_thr_, score_thr_, max_num_, bboxes);
+        postProcessingRawHeads(cls_output, box_output, dir_output, cls_dims, box_dims, dir_dims, bboxes);
 
         if (z_shift_ != 0.0f || xy_center_) {
             for (auto& box : bboxes) {
@@ -306,10 +511,14 @@ private:
         det_pub_.publish(det_array);
     }
 
-    void trtInfer(float* d_voxels, int* d_coors, int* d_num_points_per_voxel,
-                  const int pillar_num, int& max_points,
-                  nvinfer1::ICudaEngine* engine, nvinfer1::IExecutionContext* context,
-                  std::vector<float>& output)
+    bool trtInferSplit(float* d_voxels, int* d_coors, int* d_num_points_per_voxel,
+                       const int pillar_num, int& max_points,
+                       std::vector<float>& cls_output,
+                       std::vector<float>& box_output,
+                       std::vector<float>& dir_output,
+                       nvinfer1::Dims& cls_dims,
+                       nvinfer1::Dims& box_dims,
+                       nvinfer1::Dims& dir_dims)
     {
         void* inputPillarsDevice;
         void* inputCoorsBatchDevice;
@@ -325,9 +534,6 @@ private:
         cudaFree(d_coors);
         cudaFree(d_num_points_per_voxel);
 
-        void* outputDevice;
-        CHECK_CUDA(cudaMalloc(&outputDevice, output.size() * sizeof(float)));
-
         nvinfer1::Dims inputPillarDims, inputCoorsDims, inputNpointsPerPillarDims;
         inputPillarDims.nbDims = 3;
         inputPillarDims.d[0] = pillar_num;
@@ -341,23 +547,123 @@ private:
         inputNpointsPerPillarDims.nbDims = 1;
         inputNpointsPerPillarDims.d[0] = pillar_num;
 
-        context->setInputShape(tensor_name_pillars_.c_str(), inputPillarDims);
-        context->setInputShape(tensor_name_coords_.c_str(), inputCoorsDims);
-        context->setInputShape(tensor_name_num_points_.c_str(), inputNpointsPerPillarDims);
+        if (!encoder_context_->setInputShape(tensor_name_encoder_pillars_.c_str(), inputPillarDims) ||
+            !encoder_context_->setInputShape(tensor_name_encoder_coords_.c_str(), inputCoorsDims) ||
+            !encoder_context_->setInputShape(tensor_name_encoder_num_points_.c_str(), inputNpointsPerPillarDims)) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            return false;
+        }
 
-        context->setTensorAddress(tensor_name_pillars_.c_str(), inputPillarsDevice);
-        context->setTensorAddress(tensor_name_coords_.c_str(), inputCoorsBatchDevice);
-        context->setTensorAddress(tensor_name_num_points_.c_str(), inputNpointsPerPillarDevice);
-        context->setTensorAddress("output_x", outputDevice);
+        const nvinfer1::Dims encoder_output_dims = encoder_context_->getTensorShape(tensor_name_encoder_output_.c_str());
+        const size_t encoder_output_size = numElements(encoder_output_dims);
+        if (encoder_output_size == 0) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            return false;
+        }
 
-        context->enqueueV3(0);
+        void* encoderOutputDevice = nullptr;
+        CHECK_CUDA(cudaMalloc(&encoderOutputDevice, encoder_output_size * sizeof(float)));
 
-        cudaMemcpy(output.data(), outputDevice, output.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        encoder_context_->setTensorAddress(tensor_name_encoder_pillars_.c_str(), inputPillarsDevice);
+        encoder_context_->setTensorAddress(tensor_name_encoder_coords_.c_str(), inputCoorsBatchDevice);
+        encoder_context_->setTensorAddress(tensor_name_encoder_num_points_.c_str(), inputNpointsPerPillarDevice);
+        encoder_context_->setTensorAddress(tensor_name_encoder_output_.c_str(), encoderOutputDevice);
+        if (!encoder_context_->enqueueV3(0)) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            cudaFree(encoderOutputDevice);
+            return false;
+        }
+
+        if (!backbone_context_->setInputShape(tensor_name_backbone_input_.c_str(), encoder_output_dims)) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            cudaFree(encoderOutputDevice);
+            return false;
+        }
+
+        cls_dims = backbone_context_->getTensorShape(tensor_name_backbone_cls_output_.c_str());
+        box_dims = backbone_context_->getTensorShape(tensor_name_backbone_box_output_.c_str());
+        dir_dims = backbone_context_->getTensorShape(tensor_name_backbone_dir_output_.c_str());
+        const size_t cls_size = numElements(cls_dims);
+        const size_t box_size = numElements(box_dims);
+        const size_t dir_size = numElements(dir_dims);
+        if (cls_size == 0 || box_size == 0 || dir_size == 0) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            cudaFree(encoderOutputDevice);
+            return false;
+        }
+
+        void* clsDevice = nullptr;
+        void* boxDevice = nullptr;
+        void* dirDevice = nullptr;
+        CHECK_CUDA(cudaMalloc(&clsDevice, cls_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&boxDevice, box_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&dirDevice, dir_size * sizeof(float)));
+
+        backbone_context_->setTensorAddress(tensor_name_backbone_input_.c_str(), encoderOutputDevice);
+        backbone_context_->setTensorAddress(tensor_name_backbone_cls_output_.c_str(), clsDevice);
+        backbone_context_->setTensorAddress(tensor_name_backbone_box_output_.c_str(), boxDevice);
+        backbone_context_->setTensorAddress(tensor_name_backbone_dir_output_.c_str(), dirDevice);
+        if (!backbone_context_->enqueueV3(0)) {
+            cudaFree(inputPillarsDevice);
+            cudaFree(inputCoorsBatchDevice);
+            cudaFree(inputNpointsPerPillarDevice);
+            cudaFree(encoderOutputDevice);
+            cudaFree(clsDevice);
+            cudaFree(boxDevice);
+            cudaFree(dirDevice);
+            return false;
+        }
+
+        cls_output.resize(cls_size);
+        box_output.resize(box_size);
+        dir_output.resize(dir_size);
+        CHECK_CUDA(cudaMemcpy(cls_output.data(), clsDevice, cls_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(box_output.data(), boxDevice, box_size * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK_CUDA(cudaMemcpy(dir_output.data(), dirDevice, dir_size * sizeof(float), cudaMemcpyDeviceToHost));
 
         cudaFree(inputPillarsDevice);
         cudaFree(inputCoorsBatchDevice);
         cudaFree(inputNpointsPerPillarDevice);
-        cudaFree(outputDevice);
+        cudaFree(encoderOutputDevice);
+        cudaFree(clsDevice);
+        cudaFree(boxDevice);
+        cudaFree(dirDevice);
+        return true;
+    }
+
+    void postProcessingRawHeads(const std::vector<float>& cls_output,
+                                const std::vector<float>& box_output,
+                                const std::vector<float>& dir_output,
+                                const nvinfer1::Dims& cls_dims,
+                                const nvinfer1::Dims& box_dims,
+                                const nvinfer1::Dims& dir_dims,
+                                std::vector<Box3dfull>& bboxes_full)
+    {
+        RawHeadPostprocessConfig cfg;
+        cfg.score_threshold = score_thr_;
+        cfg.nms_threshold = nms_thr_;
+        cfg.max_detections = max_num_;
+        cfg.class_id_offset = class_id_offset_;
+        cfg.grid_step = grid_step_;
+        cfg.anchor_prototypes = anchor_prototypes_;
+        std::string decode_error;
+        const bool ok = decodeRawHeadsCUDA(cls_output, box_output, dir_output,
+                                           cls_dims, box_dims, dir_dims, cfg, bboxes_full, &decode_error);
+        if (!ok) {
+            bboxes_full.clear();
+            NODELET_WARN_THROTTLE(1.0,
+            "Raw-head decode failed: %s", decode_error.c_str());
+        }
     }
 
     void postProcessing(std::vector<float>& output, int& num_class, float& nms_thr,
@@ -481,8 +787,12 @@ private:
         class_name_to_label_["animal"] = nuport_perception_msgs::ObjectClassification::ANIMAL;
 
         NODELET_INFO("Loaded %zu class names with class_id_offset=%d", class_names_.size(), class_id_offset_);
-        NODELET_INFO("Tensor bindings: pillars=%s coords=%s num_points=%s",
-                     tensor_name_pillars_.c_str(), tensor_name_coords_.c_str(), tensor_name_num_points_.c_str());
+        NODELET_INFO("Encoder tensor bindings: pillars=%s coords=%s num_points=%s output=%s",
+                 tensor_name_encoder_pillars_.c_str(), tensor_name_encoder_coords_.c_str(),
+                 tensor_name_encoder_num_points_.c_str(), tensor_name_encoder_output_.c_str());
+        NODELET_INFO("Backbone tensor bindings: input=%s cls=%s box=%s dir=%s",
+                 tensor_name_backbone_input_.c_str(), tensor_name_backbone_cls_output_.c_str(),
+                 tensor_name_backbone_box_output_.c_str(), tensor_name_backbone_dir_output_.c_str());
         NODELET_INFO("Preprocess params: z_shift=%.3f xy_center=%s",
                  z_shift_, xy_center_ ? "true" : "false");
     }
@@ -513,8 +823,12 @@ private:
     ros::Publisher det_pub_;
 
     TRTLogger trt_logger_;
-    nvinfer1::ICudaEngine* engine_;
-    nvinfer1::IExecutionContext* context_;
+    nvinfer1::IRuntime* encoder_runtime_;
+    nvinfer1::ICudaEngine* encoder_engine_;
+    nvinfer1::IExecutionContext* encoder_context_;
+    nvinfer1::IRuntime* backbone_runtime_;
+    nvinfer1::ICudaEngine* backbone_engine_;
+    nvinfer1::IExecutionContext* backbone_context_;
 
     std::string input_topic_;
     std::string output_topic_;
@@ -526,16 +840,25 @@ private:
     int max_points_;
     int max_voxels_;
     int NDim_;
+    int point_feature_dim_;
     std::vector<float> voxel_size_;
     std::vector<float> coors_range_;
-    std::string tensor_name_pillars_;
-    std::string tensor_name_coords_;
-    std::string tensor_name_num_points_;
+    std::string anchor_prototypes_file_;
+    std::string tensor_name_encoder_pillars_;
+    std::string tensor_name_encoder_coords_;
+    std::string tensor_name_encoder_num_points_;
+    std::string tensor_name_encoder_output_;
+    std::string tensor_name_backbone_input_;
+    std::string tensor_name_backbone_cls_output_;
+    std::string tensor_name_backbone_box_output_;
+    std::string tensor_name_backbone_dir_output_;
     int class_id_offset_;
     float z_shift_;
     bool xy_center_ = false;
+    float grid_step_ = 0.4f;
     float last_ox_ = 0.0f;
     float last_oy_ = 0.0f;
+    std::vector<float> anchor_prototypes_;
     std::vector<std::string> class_names_;
     std::unordered_map<std::string, uint16_t> class_name_to_label_;
 };

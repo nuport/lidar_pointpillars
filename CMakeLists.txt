@@ -55,6 +55,7 @@ if(VIBRANTE OR NOT ${CMAKE_LIBRARY_ARCHITECTURE} STREQUAL "aarch64-linux-gnu")
     src/voxelization_trt.cpp
     src/utils.cpp
     src/nms_trt.cpp
+    src/pp_postprocess_cuda.cu
     src/voxelization_trt.cu
   )
 
