@@ -48,6 +48,17 @@ Convert the ONNX model to a TensorRT engine before running the node. The command
   --optShapes=voxels:5000x20x4,coords:5000x4,voxel_num_points:5000
   --maxShapes=voxels:40000x20x4,coords:40000x4,voxel_num_points:40000
   --fp16
+
+/usr/src/tensorrt/bin/trtexec --onnx=onnx/backbone_rawhead_int8_qdq.onnx \
+        --saveEngine=engines/backbone_rawhead_int8.trt \
+        --fp16 --noDataTransfers --useCudaGraph --int8
+
+/usr/src/tensorrt/bin/trtexec --onnx=onnx/encoder_fp32.onnx \
+        --saveEngine=engines/encoder_fp16.trt \
+        --fp16 --minShapes=voxels:200x20x4,coords:200x4,voxel_num_points:200 \
+               --optShapes=voxels:5000x20x4,coords:5000x4,voxel_num_points:5000 \
+               --maxShapes=voxels:40000x20x4,coords:40000x4,voxel_num_points:40000 \
+        --noDataTransfers --useCudaGraph
 ```
 
 The compiled engine is hardware-specific — it must be regenerated on every new machine or after a TensorRT version upgrade.
