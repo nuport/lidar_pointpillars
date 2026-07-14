@@ -6,9 +6,10 @@
 
 	<arg name="cloud_topic" default="/sensors/lidar/front/center/points"/>
 	<arg name="cloud_frame_id" default="lidar/front/center"/>
+	<arg name="yaw_offset" default="0"/>
 
 	<!-- Start playing rosbag using simulated clock -->
-	<node pkg="rosbag" type="play" name="player" args="--clock -r 1 $(arg bagfile)" required="True"  output="log"/>
+	<node pkg="rosbag" type="play" name="player" args="--clock -r 0.1 $(arg bagfile)" required="True"  output="log"/>
 	<param name="/use_sim_time" value="true"/>
 
 	<node pkg="nodelet" type="nodelet" name="pointpillars_manager" args="manager" output="screen"/>
@@ -30,6 +31,7 @@
 		<param name="score_threshold" value="0.3"/>
 		<param name="nms_threshold" value="0.2"/>
 		<param name="max_detections" value="100"/>
+		<param name="yaw_offset" value="$(arg yaw_offset)"/>
 	</node>
 
 </launch>

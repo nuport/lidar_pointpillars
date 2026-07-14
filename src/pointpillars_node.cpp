@@ -103,6 +103,7 @@ public:
         pnh.param<int>("class_id_offset", class_id_offset_, 0);
         pnh.param<float>("z_shift", z_shift_, 0.0f);
         pnh.param<bool>("xy_center", xy_center_, false);
+        pnh.param<float>("yaw_offset", yaw_offset_, 0.0f);
 
         loadAnchorPrototypes(pnh);
 
@@ -494,15 +495,16 @@ private:
             det.kinematics.pose.pose.position.x = box.x;
             det.kinematics.pose.pose.position.y = box.y;
             det.kinematics.pose.pose.position.z = box.z;
+            const float corrected_yaw = box.theta + yaw_offset_;
             det.kinematics.pose.pose.orientation.x = 0.0;
             det.kinematics.pose.pose.orientation.y = 0.0;
-            det.kinematics.pose.pose.orientation.z = std::sin(box.theta * 0.5);
-            det.kinematics.pose.pose.orientation.w = std::cos(box.theta * 0.5);
+            det.kinematics.pose.pose.orientation.z = std::sin(corrected_yaw * 0.5f);
+            det.kinematics.pose.pose.orientation.w = std::cos(corrected_yaw * 0.5f);
 
             // Shape
             det.shape.type = nuport_perception_msgs::Shape::BOUNDING_BOX;
-            det.shape.dimensions.x = box.l;
-            det.shape.dimensions.y = box.w;
+            det.shape.dimensions.x = box.w;
+            det.shape.dimensions.y = box.l;
             det.shape.dimensions.z = box.h;
 
             det_array.detections.push_back(det);
@@ -854,6 +856,7 @@ private:
     std::string tensor_name_backbone_dir_output_;
     int class_id_offset_;
     float z_shift_;
+    float yaw_offset_ = 0.0f;
     bool xy_center_ = false;
     float grid_step_ = 0.4f;
     float last_ox_ = 0.0f;
